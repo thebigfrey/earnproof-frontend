@@ -2,9 +2,10 @@
 
 import { useCallback, useState } from "react";
 import { formatApiKeyPrefix, rotateApiKey, revokeApiKey } from "@/lib/api/keys";
+import { getExpirationStatus, isApiKeyValid } from "@/lib/api/api-key-expiration";
 import { ConfirmationDialog } from "@/components/common/confirmation-dialog";
 import { OneTimeSecret } from "./one-time-secret";
-import { formatDate, formatMessage } from "@/lib/i18n";
+import { formatDate, formatMessage, formatRelativeTime } from "@/lib/i18n";
 import type { ApiKey } from "@/lib/api/generated/v1";
 
 const apiKeyActionTitles = {
@@ -42,6 +43,10 @@ export function ApiKeyList({
     secret: string;
   } | null>(null);
 
+  // Separate valid and expired keys for display
+  const validApiKeys = apiKeys.filter((key) => isApiKeyValid(key.expiresAt));
+  const expiredApiKeys = apiKeys.filter((key) => !isApiKeyValid(key.expiresAt));
+
   const handleRotate = useCallback(async (keyId: string) => {
     setActionLoading(keyId);
     setError(null);
@@ -75,7 +80,7 @@ export function ApiKeyList({
     }
   }, [token, onKeyRevoked]);
 
-  if (loading && apiKeys.length === 0) {
+  if (loading && validApiKeys.length === 0) {
     return (
       <div className="rounded-md border border-white/10 bg-slate-950 p-4 text-center">
         <p className="text-sm text-slate-400">Loading API keys...</p>
@@ -83,10 +88,16 @@ export function ApiKeyList({
     );
   }
 
-  if (apiKeys.length === 0) {
+  if (validApiKeys.length === 0) {
+    // Show message if all keys are expired or if there are no keys at all
+    const allExpired = apiKeys.length > 0 && validApiKeys.length === 0;
     return (
       <div className="rounded-md border border-white/10 bg-slate-950 p-4 text-center">
-        <p className="text-sm text-slate-400">No API keys found. Create your first API key above.</p>
+        <p className="text-sm text-slate-400">
+          {allExpired
+            ? "All API keys have expired. Create a new key or rotate an existing key to continue using the API."
+            : "No API keys found. Create your first API key above."}
+        </p>
       </div>
     );
   }
@@ -119,7 +130,7 @@ export function ApiKeyList({
           <div>Actions</div>
         </div>
 
-        {apiKeys.map((key) => (
+        {validApiKeys.map((key) => (
           <ApiKeyRow
             key={key.id}
             apiKey={key}
@@ -141,6 +152,39 @@ export function ApiKeyList({
           />
         ))}
       </div>
+
+      {/* Expired keys section */}
+      {expiredApiKeys.length > 0 && (
+        <div className="grid gap-3 rounded-lg border border-white/10 bg-white/[0.04] p-5">
+          <h3 className="text-sm font-semibold text-white">Expired API Keys</h3>
+          <p className="text-sm text-slate-300">
+            These API keys have expired and can no longer be used. Rotate or revoke them, or create a new key.
+          </p>
+          <div className="grid gap-3">
+            {expiredApiKeys.map((key) => (
+              <ApiKeyRow
+                key={key.id}
+                apiKey={key}
+                isLoading={actionLoading === key.id}
+                onRotate={() => 
+                  setConfirmAction({
+                    type: "rotate",
+                    keyId: key.id,
+                    keyName: key.name,
+                  })
+                }
+                onRevoke={() =>
+                  setConfirmAction({
+                    type: "revoke",
+                    keyId: key.id,
+                    keyName: key.name,
+                  })
+                }
+              />
+            ))}
+          </div>
+        </div>
+      )}
 
       {confirmAction && (
         <ConfirmationDialog
@@ -184,23 +228,89 @@ function ApiKeyRow({
   onRotate: () => void;
   onRevoke: () => void;
 }) {
+  const expirationStatus = getExpirationStatus(apiKey.expiresAt);
+
   const formatOptionalDate = (dateString: string | null | undefined) => {
     if (!dateString) return "Never";
     return formatDate(dateString);
   };
 
-  const isExpired = apiKey.expiresAt && new Date(apiKey.expiresAt) < new Date();
+  const getExpirationDisplay = () => {
+    if (!apiKey.expiresAt) {
+      return "Never";
+    }
+
+    const formatted = formatOptionalDate(apiKey.expiresAt);
+    const relative = formatRelativeTime(apiKey.expiresAt);
+    return `${formatted} — ${relative}`;
+  };
+
+  const getExpirationBgColor = () => {
+    switch (expirationStatus.tier) {
+      case "expired":
+        return "bg-rose-300/10";
+      case "expiring-very-soon":
+        return "bg-amber-300/10";
+      case "expiring-soon":
+        return "bg-yellow-300/10";
+      default:
+        return "";
+    }
+  };
+
+  const getExpirationTextColor = () => {
+    switch (expirationStatus.tier) {
+      case "expired":
+        return "text-rose-300";
+      case "expiring-very-soon":
+        return "text-amber-300";
+      case "expiring-soon":
+        return "text-yellow-300";
+      default:
+        return "text-slate-400";
+    }
+  };
+
+  const getExpirationBorderColor = () => {
+    switch (expirationStatus.tier) {
+      case "expired":
+        return "border-rose-300/30";
+      case "expiring-very-soon":
+        return "border-amber-300/30";
+      case "expiring-soon":
+        return "border-yellow-300/30";
+      default:
+        return "border-white/10";
+    }
+  };
+
+  const getExpirationWarningLabel = () => {
+    switch (expirationStatus.tier) {
+      case "expired":
+        return "Expired";
+      case "expiring-very-soon":
+        return "Expiring very soon";
+      case "expiring-soon":
+        return "Expiring soon";
+      default:
+        return null;
+    }
+  };
 
   return (
-    <div className="grid gap-3 rounded-md border border-white/10 bg-slate-950 p-4 text-sm md:grid-cols-[1.5fr_1fr_1fr_1fr_auto] md:items-center md:gap-4">
+    <div
+      className={`grid gap-3 rounded-md border p-4 text-sm md:grid-cols-[1.5fr_1fr_1fr_1fr_auto] md:items-center md:gap-4 transition ${getExpirationBgColor()} ${getExpirationBorderColor()}`}
+    >
       {/* Name & Prefix */}
       <div className="min-w-0">
         <div className="font-medium text-white">{apiKey.name}</div>
         <div className="mt-1 font-mono text-xs text-slate-400">
           {formatApiKeyPrefix(apiKey.prefix)}***
         </div>
-        {isExpired && (
-          <div className="mt-1 text-xs text-rose-300">Expired</div>
+        {!expirationStatus.isActive && (
+          <div className={`mt-1 text-xs font-semibold ${getExpirationTextColor()}`}>
+            {getExpirationWarningLabel()}
+          </div>
         )}
       </div>
 
@@ -231,8 +341,12 @@ function ApiKeyRow({
       {/* Expires */}
       <div>
         <div className="text-slate-300 md:hidden font-semibold">Expires:</div>
-        <div className={`${isExpired ? "text-rose-300" : "text-slate-400"}`}>
-          {formatOptionalDate(apiKey.expiresAt)}
+        <div
+          className={getExpirationTextColor()}
+          role={expirationStatus.tier !== "active" ? "status" : undefined}
+          aria-live={expirationStatus.tier !== "active" ? "polite" : undefined}
+        >
+          {getExpirationDisplay()}
         </div>
       </div>
 
@@ -242,6 +356,7 @@ function ApiKeyRow({
           onClick={onRotate}
           disabled={isLoading}
           className="h-8 rounded border border-white/15 px-3 text-xs font-medium text-white hover:bg-white/5 disabled:opacity-50 transition"
+          aria-label={`Rotate API key ${apiKey.name}`}
         >
           {isLoading ? "..." : "Rotate"}
         </button>
@@ -249,6 +364,7 @@ function ApiKeyRow({
           onClick={onRevoke}
           disabled={isLoading}
           className="h-8 rounded border border-rose-300/30 px-3 text-xs font-medium text-rose-200 hover:bg-rose-300/10 disabled:opacity-50 transition"
+          aria-label={`Revoke API key ${apiKey.name}`}
         >
           {isLoading ? "..." : "Revoke"}
         </button>
